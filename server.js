@@ -56,8 +56,8 @@ setInterval(async () => {
 
         for (let wallet of wallets) {
             try {
-                // 📡 完美的标准 URL 路径拼接，增加了丢失的斜杠
-                const url = `https://trongrid.io{wallet.address}/transactions/trc20?limit=1&contract_address=TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t`;
+                // 📡 采用最传统的字符串加号（+）拼接，彻底杜绝大括号拼接错误
+                const url = "https://trongrid.io" + wallet.address + "/transactions/trc20?limit=1&contract_address=TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
                 const response = await axios.get(url);
                 
                 if (!response.data || !response.data.data || response.data.data.length === 0) {
@@ -67,12 +67,14 @@ setInterval(async () => {
                 const lastTx = response.data.data[0]; // 获取最新的一笔交易
                 const txTimestamp = lastTx.block_timestamp;
 
+                // 如果发现链上的最新交易时间戳大于我们数据库记录的时间戳，说明有新交易！
                 if (txTimestamp > wallet.lastTxTimestamp) {
                     const fromAddress = lastTx.from;
                     const toAddress = lastTx.to;
                     const value = (parseFloat(lastTx.value) / 1000000).toFixed(2); 
                     const txId = lastTx.transaction_id;
 
+                    // 发送通知到对应的全局聊天 ID 
                     if (fromAddress === wallet.address) {
                         bot.sendMessage(process.env.TG_CHAT_ID, `💸 【转出通知】\n监控地址: ${wallet.address}\n动作: 支出 USDT\n金额: ${value} USDT\n接收方: ${toAddress}\n单号: ${txId.substring(0,8)}...`);
                     } else if (toAddress === wallet.address) {
