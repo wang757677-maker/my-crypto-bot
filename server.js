@@ -35,11 +35,15 @@ expressApp.listen(process.env.PORT || 3000);
 bot.onText(/\/add\s+(\S+)\s+(\S+)/, async (msg, match) => {
     const coin = match[1].toUpperCase();
     const address = match[2];
+    
+    // 💡 核心修复：动态获取当前指令来自哪里（如果是群组就发回群组，如果是私聊就发回私聊）
+    const targetChatId = msg.chat.id; 
+    
     try {
         await Wallet.create({ address, coin });
-        bot.sendMessage(chatId, `✅ 成功添加监控地址:\n币种: ${coin}\n地址: ${address}`);
+        bot.sendMessage(targetChatId, `✅ 成功添加监控地址:\n币种: ${coin}\n地址: ${address}`);
     } catch (error) {
         console.error("写入失败详情:", error);
-        bot.sendMessage(chatId, `❌ 数据库写入失败！可能是地址已存在或数据库未连接成功。`);
+        bot.sendMessage(targetChatId, `❌ 数据库写入失败！可能是地址已存在或数据库未连接成功。`);
     }
 });
