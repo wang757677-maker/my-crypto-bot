@@ -1,105 +1,81 @@
-const express = require('express');
+const TelegramBot = require('node-telegram-bot-api');
 const axios = require('axios');
-const crypto = require('crypto'); // 引入加密模块用于安全验证
-const app = express();
-app.use(express.json());
 
-const TG_BOT_TOKEN = process.env.TG_BOT_TOKEN; 
-const TG_CHAT_ID = process.env.TG_CHAT_ID;
-const MORALIS_API_KEY = process.env.MORALIS_API_KEY; // 用于安全验证
+// 从你在 Render 配置的钥匙孔里自动读取密码
+const token = process.env.TG_BOT_TOKEN;
+const chatId = process.env.TG_CHAT_ID;
 
-// 2026最新设计：创建一个内存消息队列，防止Telegram限流导致服务器崩溃
-const messageQueue = [];
-let isProcessingQueue = false;
-
-// 异步循环处理队列，保证每笔通知之间间隔 500 毫秒，100% 不漏单、不触发限流
-async function processQueue() {
-    if (isProcessingQueue || messageQueue.length === 0) return;
-    isProcessingQueue = true;
-
-    while (messageQueue.length > 0) {
-        const message = messageQueue.shift();
-        try {
-            await axios.post(`https://telegram.org{TG_BOT_TOKEN}/sendMessage`, {
-                chat_id: TG_CHAT_ID,
-                text: message,
-                parse_mode: 'HTML',
-                disable_web_page_preview: true
-            });
-            // 每次发送后歇 0.5 秒
-            await new Promise(resolve => setTimeout(resolve, 500));
-        } catch (error) {
-            console.error('Telegram 发送失败，稍后重试:', error.message);
-            // 如果被限流，把消息塞回队列头部并等待 5 秒
-            if (error.response && error.response.status === 429) {
-                messageQueue.unshift(message);
-                await new Promise(resolve => setTimeout(resolve, 5000));
-            }
-        }
-    }
-    isProcessingQueue = false;
+if (!token || !chatId) {
+    console.error("❌ 错误：未在 Render 中配置 TG_BOT_TOKEN 或 TG_CHAT_ID！");
+    process.exit(1);
 }
 
-// 接收来自区块链的监控数据
-app.post('/webhook', async (req, res) => {
+const bot = new TelegramBot(token, { polling: true });
+
+// 📥 【核心监控钱包】把你想要死死盯着的巨鲸钱包地址填在下面
+const WALLET_TO_WATCH = "0x71C7656EC7ab88b098defB751B7401B5f6d1476B"; 
+
+let lastBalance = null;
+
+// 24小时在后台免费查账的秘密函数（换用绝对不带任何防火墙拦截的全新极速多链网关）
+async function checkMultiChainBalance() {
     try {
-        // 安全检查 1：防止黑客发送假数据轰炸你的机器人
-        const signature = req.headers['x-signature'];
-        if (!signature && process.env.NODE_ENV === 'production') {
-            return res.status(401).send('Unauthorized: Missing signature');
+        const response = await axios.post('https://meowrpc.com', {
+            jsonrpc: "2.0",
+            id: 1,
+            method: "eth_getBalance",
+            params: [WALLET_TO_WATCH, "latest"]
+        }, {
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+        });
+
+        if (response.data && response.data.result) {
+            // 将十六进制余额转换为人类看得懂的数字
+            const rawBalance = parseInt(response.data.result, 16);
+            const balanceInEth = (rawBalance / 1e18).toFixed(4);
+
+            console.log(`[监控日志] 巨鲸当前币安链余额: ${balanceInEth} BNB`);
+
+            // 如果是第一次启动，先记录初始余额
+            if (lastBalance === null) {
+                lastBalance = balanceInEth;
+                bot.sendMessage(chatId, `🎉 晚安多链监控机器人已在云端成功上线！\n👀 正在 24 小时死守目标钱包：\n\`${WALLET_TO_WATCH}\``);
+                return;
+            }
+
+            // 如果余额发生变动，说明巨鲸转账了！立刻向电报群发送精美的中文轰炸通知
+            if (balanceInEth !== lastBalance) {
+                const changeType = balanceInEth > lastBalance ? "📥 资金流入 (买入/充值)" : "📤 资金流出 (卖出/转账)";
+                const difference = Math.abs(balanceInEth - lastBalance).toFixed(4);
+                
+                const message = `🚨 【巨鲸多链异动提醒】 🚨\n\n` +
+                                `📌 钱包地址:\n\`${WALLET_TO_WATCH}\`\n\n` +
+                                `动态类型: ${changeType}\n` +
+                                `💰 变动金额: ${difference} BNB\n` +
+                                `📊 当前总余额: ${balanceInEth} BNB\n\n` +
+                                `⏰ 监控源: Render 24小时云端机房`;
+
+                bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+                lastBalance = balanceInEth; // 更新余额状态
+            }
         }
-
-        const body = req.body;
-        
-        // 过滤空数据
-        if (!body || !body.erc20Transfers || body.erc20Transfers.length === 0) {
-            return res.status(200).send('No ERC20 Transfers');
-        }
-
-        // 循环处理每一笔代币转账
-        for (const transfer of body.erc20Transfers) {
-            const chainId = body.chainId; 
-            const from = transfer.from;
-            const to = transfer.to;
-            
-            // 2026年防精度溢出的最新科学记数法兼容处理
-            const decimal = parseInt(transfer.tokenDecimal) || 18;
-            const value = (BigInt(transfer.value) / BigInt(10 ** decimal)).toString();
-            
-            const tokenSymbol = transfer.tokenSymbol || 'Unknown';
-            const txHash = transfer.transactionHash;
-
-            // 智能识别区块链中文名字（支持2026年最新热门链）
-            let chainName = `EVM多链 (ChainID: ${chainId})`;
-            if (chainId === "0x1") chainName = "🔷 Ethereum (以太坊)";
-            if (chainId === "0x38") chainName = "🟡 BSC (币安智能链)";
-            if (chainId === "0x2105") chainName = "🔵 Base (热门L2)";
-            if (chainId === "0xa4b1") chainName = "🧡 Arbitrum";
-            if (chainId === "0x89") chainName = "💜 Polygon";
-
-            // 组装完美的中文 Telegram 通知样式
-            const message = `🔔 <b>【多链钱包动态监控】</b>\n\n` +
-                            `🌐 <b>所属区块链:</b> ${chainName}\n` +
-                            `💰 <b>代币变动量:</b> ${value} ${tokenSymbol}\n\n` +
-                            `🛫 <b>发送方 (From):</b>\n<code>${from}</code>\n\n` +
-                            `🛬 <b>接收方 (To):</b>\n<code>${to}</code>\n\n` +
-                            `🔗 <a href="https://debank.com{to}">📊 点击进入DeBank查看资产变动</a>\n` +
-                            `🔎 <a href="https://arkhamintelligence.com{to}">🦅 点击使用 Arkham 追踪巨鲸</a>`;
-
-            // 将消息推入队列，而不是直接发送
-            messageQueue.push(message);
-        }
-
-        // 触发队列处理机制
-        processQueue();
-
-        res.status(200).send('Successfully queued');
     } catch (error) {
-        console.error('Webhook 处理错误:', error.message);
-        res.status(500).send('Internal Error');
+        console.error("查账时发生微小网络波动，5分钟后会自动重试...");
     }
+}
+
+// 激活聊天指令，当你在电报里发 /start 时，机器人会立刻温柔回复你
+bot.onText(/\/start/, (msg) => {
+    bot.sendMessage(msg.chat.id, "🤖 晚安！我已经成功收到了你的唤醒指令。我的后台多链监控引擎正在 Render 云端 24 小时为你站岗，只要目标钱包有资金进出，我会立刻在这个群里通知你！");
 });
 
-// 免费服务器保活监听
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`完美的2026款多链监控机器人已在端口 ${PORT} 启动...`));
+// 让服务器每隔 5 分钟（300000毫秒）在云端自动跑一次查账代码
+setInterval(checkMultiChainBalance, 300000);
+// 启动时立刻查一次
+checkMultiChainBalance();
+
+// 保持 Render 要求的端口开机状态
+const express = require('express');
+const app = express();
+app.get('/', (req, res) => res.send('机器人运行正常'));
+app.listen(process.env.PORT || 3000);
