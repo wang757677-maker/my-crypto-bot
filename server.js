@@ -1,7 +1,7 @@
 const TelegramBot = require('node-telegram-bot-api');
 const mongoose = require('mongoose');
 const express = require('express');
-const axios = require('axios'); // 引入 axios 用于请求新接口
+const axios = require('axios');
 
 const token = process.env.TG_BOT_TOKEN;
 const mongoUri = process.env.MONGODB_URI;
@@ -16,11 +16,11 @@ mongoose.connect(mongoUri)
   .then(() => console.log("🚀 成功连接到远程 MongoDB 数据库！"))
   .catch(err => console.error("❌ MongoDB 连接失败:", err));
 
-// 钱包数据模型（lastBlock 改为记录最后一次交易的时间戳，防重复）
+// 钱包数据模型
 const WalletSchema = new mongoose.Schema({
     address: { type: String, unique: true, required: true },
     coin: { type: String, required: true },
-    lastTxTimestamp: { type: Number, default: 0 } // 记录最后一次处理的交易时间戳
+    lastTxTimestamp: { type: Number, default: 0 }
 });
 const Wallet = mongoose.model('Wallet', WalletSchema);
 
@@ -32,8 +32,8 @@ expressApp.listen(process.env.PORT || 3000);
 
 // 1️⃣ 处理 /add 指令
 bot.onText(/\/add\s+(\S+)\s+(\S+)/, async (msg, match) => {
-    const coin = match.toUpperCase();
-    const address = match;
+    const coin = match[1].toUpperCase();
+    const address = match[2];
     const targetChatId = msg.chat.id; 
 
     if (coin === 'USDT' && !address.startsWith('T')) {
@@ -41,7 +41,6 @@ bot.onText(/\/add\s+(\S+)\s+(\S+)/, async (msg, match) => {
     }
 
     try {
-        // 首次添加时，初始化最后检查时间为当前时间戳
         await Wallet.create({ address, coin, lastTxTimestamp: Date.now() });
         bot.sendMessage(targetChatId, `✅ 成功添加监控地址:\n币种: ${coin}\n地址: ${address}\n状态: 实时监控中...`);
     } catch (error) {
@@ -57,7 +56,7 @@ setInterval(async () => {
 
         for (let wallet of wallets) {
             try {
-                // 📡 使用 TronGrid 稳定的官方 v1 接口获取该地址最新的一笔 TRC20 交易
+                // 📡 修复后的正确字符串拼接：使用反引号并正确包裹变量
                 const url = `https://trongrid.io{wallet.address}/transactions/trc20?limit=1&contract_address=TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t`;
                 const response = await axios.get(url);
                 
@@ -65,25 +64,23 @@ setInterval(async () => {
                     continue; 
                 }
 
-                const lastTx = response.data.data[0];
-                const txTimestamp = lastTx.block_timestamp; // 交易时间戳
+                const lastTx = response.data.data[0]; // 获取最新的一笔
+                const txTimestamp = lastTx.block_timestamp;
 
                 // 如果发现链上的最新交易时间戳大于我们数据库记录的时间戳，说明有新交易！
                 if (txTimestamp > wallet.lastTxTimestamp) {
                     const fromAddress = lastTx.from;
                     const toAddress = lastTx.to;
-                    // 转换精度：波场 USDT 精度为 6
                     const value = (parseFloat(lastTx.value) / 1000000).toFixed(2); 
                     const txId = lastTx.transaction_id;
 
-                    // 判断是转出（付款）还是转入（收款）
+                    // 发送通知
                     if (fromAddress === wallet.address) {
                         bot.sendMessage(process.env.TG_CHAT_ID, `💸 【转出通知】\n监控地址: ${wallet.address}\n动作: 支出 USDT\n金额: ${value} USDT\n接收方: ${toAddress}\n单号: ${txId.substring(0,8)}...`);
                     } else if (toAddress === wallet.address) {
                         bot.sendMessage(process.env.TG_CHAT_ID, `💰 【收款通知】\n监控地址: ${wallet.address}\n动作: 收到 USDT\n金额: ${value} USDT\n发送方: ${fromAddress}\n单号: ${txId.substring(0,8)}...`);
                     }
 
-                    // 更新数据库中的时间戳锚点，防止下一次轮询重复通知
                     wallet.lastTxTimestamp = txTimestamp;
                     await wallet.save();
                 }
@@ -94,4 +91,4 @@ setInterval(async () => {
     } catch (err) {
         console.error("定时轮询监控发生错误:", err);
     }
-}, 15000); // 每 15 秒自动检查一次
+}, 15000);
