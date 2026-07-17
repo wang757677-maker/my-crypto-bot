@@ -1,7 +1,7 @@
 {
   "name": "my-crypto-bot",
   "version": "1.0.0",
-  "description": "Multi-chain crypto wallet monitor bot",
+  "description": "Multi-chain crypto wallet monitor bot with DB commands",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
@@ -9,7 +9,8 @@
   "dependencies": {
     "express": "^4.19.2",
     "axios": "^1.7.2",
-    "node-telegram-bot-api": "^0.66.0"
+    "node-telegram-bot-api": "^0.66.0",
+    "nedb": "^1.8.0"
   },
   "engines": {
     "node": ">=18.0.0"
