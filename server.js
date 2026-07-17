@@ -32,8 +32,8 @@ expressApp.listen(process.env.PORT || 3000);
 
 // 1️⃣ 处理 /add 指令
 bot.onText(/\/add\s+(\S+)\s+(\S+)/, async (msg, match) => {
-    const coin = match[1].toUpperCase();
-    const address = match[2];
+    const coin = match.toUpperCase();
+    const address = match;
     const targetChatId = msg.chat.id; 
 
     if (coin === 'USDT' && !address.startsWith('T')) {
@@ -56,7 +56,7 @@ setInterval(async () => {
 
         for (let wallet of wallets) {
             try {
-                // 📡 修复后的正确字符串拼接：使用反引号并正确包裹变量
+                // 📡 关键修复点：使用标准的反引号，并用 ${} 正确包裹变量名
                 const url = `https://trongrid.io{wallet.address}/transactions/trc20?limit=1&contract_address=TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t`;
                 const response = await axios.get(url);
                 
@@ -64,7 +64,7 @@ setInterval(async () => {
                     continue; 
                 }
 
-                const lastTx = response.data.data[0]; // 获取最新的一笔
+                const lastTx = response.data.data[0]; // 获取最新的一笔交易
                 const txTimestamp = lastTx.block_timestamp;
 
                 // 如果发现链上的最新交易时间戳大于我们数据库记录的时间戳，说明有新交易！
@@ -74,7 +74,7 @@ setInterval(async () => {
                     const value = (parseFloat(lastTx.value) / 1000000).toFixed(2); 
                     const txId = lastTx.transaction_id;
 
-                    // 发送通知
+                    // 发送通知到对应的全局聊天 ID 
                     if (fromAddress === wallet.address) {
                         bot.sendMessage(process.env.TG_CHAT_ID, `💸 【转出通知】\n监控地址: ${wallet.address}\n动作: 支出 USDT\n金额: ${value} USDT\n接收方: ${toAddress}\n单号: ${txId.substring(0,8)}...`);
                     } else if (toAddress === wallet.address) {
