@@ -56,8 +56,8 @@ setInterval(async () => {
 
         for (let wallet of wallets) {
             try {
-                // 📡 关键修复点：使用标准的反引号，并用 ${} 正确包裹变量名
-                const url = `https://trongrid.io{wallet.address}/transactions/trc20?limit=1&contract_address=TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t`;
+                // 📡 彻底修复字符串拼接问题
+                const url = "https://trongrid.io" + wallet.address + "/transactions/trc20?limit=1&contract_address=TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
                 const response = await axios.get(url);
                 
                 if (!response.data || !response.data.data || response.data.data.length === 0) {
@@ -85,7 +85,7 @@ setInterval(async () => {
                     await wallet.save();
                 }
             } catch (e) {
-                console.error(`扫描地址 ${wallet.address} 出错:`, e.message);
+                console.error("扫描地址 " + wallet.address + " 出错:", e.message);
             }
         }
     } catch (err) {
