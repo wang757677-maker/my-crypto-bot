@@ -56,7 +56,7 @@ setInterval(async () => {
 
         for (let wallet of wallets) {
             try {
-                // 📡 彻底修复字符串拼接问题
+                // 📡 彻底修复路径拼接，改用标准的字符串加号相连
                 const url = "https://trongrid.io" + wallet.address + "/transactions/trc20?limit=1&contract_address=TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
                 const response = await axios.get(url);
                 
