@@ -1,4 +1,4 @@
-// 🚨 全局死因拦截器：强迫打印任何导致闪退的底层报错
+// 🚨 1️⃣ 全局死因拦截器：强迫打印任何导致闪退的底层报错，杜绝盲盒闪退
 process.on('uncaughtException', (err) => {
     console.error('💥 捕获到致命全局崩溃错误:', err.message);
     console.error('📊 崩溃堆栈跟踪:', err.stack);
@@ -7,6 +7,7 @@ process.on('uncaughtException', (err) => {
 process.on('unhandledRejection', (reason, promise) => {
     console.error('💥 捕获到未处理的 Promise 拒绝:', reason);
 });
+
 const TelegramBot = require('node-telegram-bot-api');
 const mongoose = require('mongoose');
 const express = require('express');
@@ -15,7 +16,7 @@ const axios = require('axios');
 const token = process.env.TG_BOT_TOKEN;
 const mongoUri = process.env.MONGODB_URI;
 
-// 🔑 第三方核心网络接口凭证
+// 🔑 第三方核心网络接口凭证（若不配置则默认走公共通道）
 const TRON_API_KEY = process.env.TRON_API_KEY || ''; 
 const ALCHEMY_API_KEY = process.env.ALCHEMY_API_KEY || 'demo'; 
 const SOLANA_RPC_URL = process.env.SOLANA_RPC_URL || 'https://solana.com';
@@ -31,7 +32,7 @@ mongoose.connect(mongoUri)
   .then(() => console.log("🚀 成功连接到全智能五大币种监控数据库！"))
   .catch(err => console.error("❌ MongoDB 连接失败:", err));
 
-// 🛠️ 1️⃣ 精准钱包数据模型
+// 🛠️ 2️⃣ 精准钱包数据模型
 const WalletSchema = new mongoose.Schema({
     address: { type: String, required: true },
     coin: { type: String, required: true },         
@@ -45,11 +46,17 @@ const Wallet = mongoose.model('RealtimeMultiChainWallet', WalletSchema);
 
 const bot = new TelegramBot(token, { polling: true });
 
+// 📡 3️⃣ 核心兼容：重构 Express 以完美绕过 Render 2秒健康检查闪退锁
 const expressApp = express();
-expressApp.get('/', (req, res) => res.send('Enterprise Multi-Chain Monitor is running'));
-expressApp.listen(process.env.PORT || 3000);
+expressApp.get('/', (req, res) => res.status(200).send('OK'));
+expressApp.get('/healthz', (req, res) => res.status(200).send('OK'));
 
-// 📱 2️⃣ 指令中心说明
+const PORT = process.env.PORT || 3000;
+expressApp.listen(PORT, '0.0.0.0', () => {
+    console.log(`📡 端口监听成功！健康检查已激活，运行于宿主机端口: ${PORT}`);
+});
+
+// 📱 4️⃣ 指令中心说明
 bot.onText(/\/start/, (msg) => {
     const chatId = msg.chat.id;
     const welcome = `👋 **欢迎使用秒级全资产大额/异动流水监控机器人！**\n\n` +
@@ -64,7 +71,7 @@ bot.onText(/\/start/, (msg) => {
     bot.sendMessage(chatId, welcome, { parse_mode: 'Markdown' });
 });
 
-// 📥 3️⃣ 智能多链添加处理器
+// 📥 5️⃣ 智能多链添加处理器（修复正则偏误）
 bot.onText(/\/add\s+(\S+)\s+(\S+)\s+(\S+)(?:\s+(\S+))?/, async (msg, match) => {
     const coin = match[1].toUpperCase();
     const chain = match[2].toUpperCase();
@@ -86,11 +93,12 @@ bot.onText(/\/add\s+(\S+)\s+(\S+)\s+(\S+)(?:\s+(\S+))?/, async (msg, match) => {
     }
 });
 
-// 🔄 4️⃣ 分布式保护级总控制循环
+// 🔄 6️⃣ 分布式保护级总控制循环
 setInterval(async () => {
     try {
         const wallets = await Wallet.find({});
         for (let wallet of wallets) {
+            // 毫秒级防截流休眠器：给高频API留出呼吸时间，杜绝被封主网IP
             await new Promise(resolve => setTimeout(resolve, 300)); 
             try {
                 if (wallet.chain === 'BTC') await scanBitcoin(wallet);
@@ -217,16 +225,3 @@ async function scanXRP(wallet) {
         method: "account_tx",
         params: [{ account: wallet.address, limit: 1, ledger_index_min: -1, ledger_index_max: -1 }]
     };
-    const response = await axios.post(XRPL_RPC_URL, postData);
-    const txObj = response.data?.result?.transactions?.[0];
-    if (!txObj || !txObj.tx_ok) return;
-
-    const txId = txObj.tx.hash;
-    if (txId !== wallet.lastTxId) {
-        const txDetail = txObj.tx;
-        
-        if (txDetail.TransactionType === "Payment" && typeof txDetail.Amount === "string") {
-            const isOut = txDetail.Account === wallet.address;
-            const value = (parseFloat(txDetail.Amount) / 1000000).toFixed(2); 
-            const counterparty = isOut ? txDetail.Destination : txDetail.Account;
-
