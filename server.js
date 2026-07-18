@@ -1,3 +1,12 @@
+// 🚨 全局死因拦截器：强迫打印任何导致闪退的底层报错
+process.on('uncaughtException', (err) => {
+    console.error('💥 捕获到致命全局崩溃错误:', err.message);
+    console.error('📊 崩溃堆栈跟踪:', err.stack);
+    process.exit(1);
+});
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('💥 捕获到未处理的 Promise 拒绝:', reason);
+});
 const TelegramBot = require('node-telegram-bot-api');
 const mongoose = require('mongoose');
 const express = require('express');
