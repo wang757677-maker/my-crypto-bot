@@ -216,4 +216,43 @@ async function scanXRP(wallet) {
         const txDetail = txObj.tx;
         
         // XRP Ledger 中标准的 Payment 支付指令且必须是纯 XRP 交易（字符串代表XRP微滴 drops）
+        if (txDetail.TransactionType === "Payment" && typeof txDetail.Amount === "string") {        // XRP Ledger 中标准的 Payment 支付指令且必须是纯 XRP 交易（字符串代表XRP微滴 drops）
         if (txDetail.TransactionType === "Payment" && typeof txDetail.Amount === "string") {
+            const isOut = txDetail.Account === wallet.address;
+            const value = (parseFloat(txDetail.Amount) / 1000000).toFixed(2); // 6位精度
+            const counterparty = isOut ? txDetail.Destination : txDetail.Account;
+
+            sendNotification(wallet, isOut, value, txId, 'XRP', counterparty);
+        }
+        wallet.lastTxId = txId;
+        await wallet.save();
+    }
+}
+
+// 📢 5️⃣ 顶级通知格式化中心（把漏掉的这个函数完整补在文件最底部）
+function sendNotification(wallet, isOut, value, txId, activeSymbol, counterparty, btcStatus = '') {
+    const actionStr = isOut ? `💸 【转出通知】` : `💰 【收款通知】`;
+    const arrowStr = isOut ? `支出` : `收到`;
+    
+    let explorerUrl = `https://tronscan.org{txId}`;
+    if (wallet.chain === 'BTC') explorerUrl = `https://mempool.space{txId}`;
+    if (wallet.chain === 'ETH') explorerUrl = `https://etherscan.io{txId}`;
+    if (wallet.chain === 'SOL') explorerUrl = `https://solscan.io{txId}`;
+    if (wallet.chain === 'XRPL') explorerUrl = `https://xrpscan.com{txId}`;
+
+    const btcExtra = btcStatus ? `📊 记账状态: _${btcStatus}_\n` : '';
+
+    const text = `${actionStr}\n` +
+                 `=====================\n` +
+                 `🌐 动账网络: *${wallet.chain}*\n` +
+                 `📍 监控账户: \`${wallet.address.substring(0,8)}...${wallet.address.substring(wallet.address.length-4)}\`\n` +
+                 `⚡ 业务类型: *${arrowStr} ${activeSymbol}*\n` +
+                 `💵 流动净值: *${value}* ${activeSymbol}\n` +
+                 `👤 交易对手: \`${counterparty.substring(0,16)}...\`\n` +
+                 btcExtra +
+                 `=====================\n` +
+                 `🔗 [在区块链浏览器中查看完整交易明细](${explorerUrl})`;
+
+    bot.sendMessage(process.env.TG_CHAT_ID, text, { parse_mode: 'Markdown', disable_web_page_preview: true });
+}
+
