@@ -30,7 +30,21 @@ const expressApp = express();
 expressApp.get('/', (req, res) => res.send('Bot is running'));
 expressApp.listen(process.env.PORT || 3000);
 
-// 1️⃣ 处理 /add 指令
+// 🆕 1️⃣ 新增：处理 /start 指令
+bot.onText(/\/start/, (msg) => {
+    const chatId = msg.chat.id;
+    const welcomeMessage = `👋 **欢迎使用多链/波场 TRC20 钱包监控机器人！**\n\n` +
+                           `您可以直接使用以下指令来添加想要监听的地址：\n\n` +
+                           `📝 **添加监控格式：**\n` +
+                           `/add 币种 钱包地址\n\n` +
+                           `💡 **示例：**\n` +
+                           `/add USDT TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t\n\n` +
+                           `*目前机器人每 15 秒会自动扫描一次新交易并向通知频道发送播报。*`;
+    
+    bot.sendMessage(chatId, welcomeMessage, { parse_mode: 'Markdown' });
+});
+
+// 2️⃣ 处理 /add 指令
 bot.onText(/\/add\s+(\S+)\s+(\S+)/, async (msg, match) => {
     const coin = match[1].toUpperCase();
     const address = match[2];
@@ -48,7 +62,7 @@ bot.onText(/\/add\s+(\S+)\s+(\S+)/, async (msg, match) => {
     }
 });
 
-// 2️⃣ 核心轮询：每 15 秒扫描一次地址的 TRC20 最新流水
+// 3️⃣ 核心轮询：每 15 秒扫描一次地址的 TRC20 最新流水
 setInterval(async () => {
     try {
         const wallets = await Wallet.find({});
@@ -56,8 +70,11 @@ setInterval(async () => {
 
         for (let wallet of wallets) {
             try {
-                // 📡 采用最传统的字符串加号（+）拼接，彻底杜绝大括号拼接错误
-                const url = "https://trongrid.io" + wallet.address + "/transactions/trc20?limit=1&contract_address=TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
+                // 🛠️ 修复核心错误：修正为 TronGrid 官方标准 v1 接口 URL
+                const url = `https://trongrid.io{wallet.address}/transactions/trc20?limit=1&contract_address=TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t`;
+                
+                // 💡 提示：如果频繁请求被 TronGrid 截流，建议在环境变量中配置并加上请求头：
+                // { headers: { 'TRON-PRO-API-KEY': process.env.TRON_API_KEY } }
                 const response = await axios.get(url);
                 
                 if (!response.data || !response.data.data || response.data.data.length === 0) {
@@ -85,10 +102,10 @@ setInterval(async () => {
                     await wallet.save();
                 }
             } catch (e) {
-                console.error("扫描地址出错:", e.message);
+                console.error(`扫描地址 ${wallet.address} 出错:`, e.message);
             }
         }
     } catch (err) {
         console.error("定时轮询监控发生错误:", err);
     }
-}, 15000);
+}, 15000); 
