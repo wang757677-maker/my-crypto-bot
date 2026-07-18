@@ -6,10 +6,10 @@ const axios = require('axios');
 const token = process.env.TG_BOT_TOKEN;
 const mongoUri = process.env.MONGODB_URI;
 
-// 可选：为了保证高并发和稳定性，建议配置第三方节点的 API KEY
+// 🔑 建议配置的 API 密钥（可极大提升稳定性和并发限制）
 const TRON_API_KEY = process.env.TRON_API_KEY || ''; 
-const ALCHEMY_API_KEY = process.env.ALCHEMY_API_KEY || 'demo'; // 替换为你的 Alchemy 密钥
-const SOLANA_RPC_URL = process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
+const ALCHEMY_API_KEY = process.env.ALCHEMY_API_KEY || 'demo'; // 用于以太坊/Base 的精准数据提取
+const SOLANA_RPC_URL = process.env.SOLANA_RPC_URL || 'https://solana.com';
 
 if (!token || !mongoUri) {
     console.error("❌ 错误：未配置 TG_BOT_TOKEN 或 MONGODB_URI！");
@@ -18,196 +18,221 @@ if (!token || !mongoUri) {
 
 // 🌐 连接 MongoDB
 mongoose.connect(mongoUri)
-  .then(() => console.log("🚀 成功连接到远程多链监控数据库！"))
+  .then(() => console.log("🚀 成功连接到远程全功能多链数据库！"))
   .catch(err => console.error("❌ MongoDB 连接失败:", err));
 
-// 🛠️ 1️⃣ 重构钱包数据模型（加入链字段与最新的唯一标识符）
+// 🛠️ 1️⃣ 升级钱包数据模型
 const WalletSchema = new mongoose.Schema({
     address: { type: String, required: true },
-    coin: { type: String, required: true },
-    chain: { type: String, required: true }, // TRON, ETH, SOL, BASE 等
-    lastTxId: { type: String, default: '' },   // 针对 Solana 使用签名特征码，针对EVM/TRON可用时间戳或txId
+    coin: { type: String, required: true },       // 监听的币种符号，如 USDT, ETH, SOL, USDC 等
+    chain: { type: String, required: true },      // TRON, ETH, BASE, SOL 
+    contractAddress: { type: String, default: '' }, // 【新增】如果是代币监控，记录代币的合约地址
+    lastTxId: { type: String, default: '' },
     lastTxTimestamp: { type: Number, default: 0 }
 });
-// 联合唯一索引：同一个链下的同一个地址不能重复添加
-WalletSchema.index({ address: 1, chain: 1 }, { unique: true });
-const Wallet = mongoose.model('MultiChainWallet', WalletSchema);
+WalletSchema.index({ address: 1, chain: 1, contractAddress: 1 }, { unique: true });
+const Wallet = mongoose.model('AdvancedMultiChainWallet', WalletSchema);
 
 const bot = new TelegramBot(token, { polling: true });
 
 const expressApp = express();
-expressApp.get('/', (req, res) => res.send('Multi-Chain Bot is running'));
+expressApp.get('/', (req, res) => res.send('Advanced Multi-Chain Bot is running'));
 expressApp.listen(process.env.PORT || 3000);
 
-// 📱 2️⃣ 更新 /start 指令
+// 📱 2️⃣ 升级后的 /start 指令（包含合约配置说明）
 bot.onText(/\/start/, (msg) => {
     const chatId = msg.chat.id;
-    const welcomeMessage = `👋 **欢迎使用 Web3 多链资产监控机器人！**\n\n` +
-                           `您可以直接使用以下指令来添加想要监控的钱包地址：\n\n` +
-                           `📝 **添加监控格式：**\n` +
-                           `/add [币种] [区块链] [钱包地址]\n\n` +
-                           `💡 **各大主流链支持示例：**\n` +
-                           `• **波场监控：** \`/add USDT TRON TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t\`\n` +
-                           `• **以太坊监控：** \`/add ETH ETH 0x72e8...0000\`\n` +
-                           `• **Solana监控：** \`/add SOL SOL BXbm...Th\`\n\n` +
-                           `*目前机器人每 15 秒会自动分布式扫描所有多链资产流水并向通知频道发送播报。*`;
+    const welcomeMessage = `👋 **欢迎使用高级 Web3 多链资产流水监控机器人！**\n\n` +
+                           `您可以自由添加原生代币或特定代币合约的监控：\n\n` +
+                           `📝 **基本监控（原生代币）：**\n` +
+                           `/add [币种] [区块链] [钱包地址]\n` +
+                           `💡 \`/add ETH ETH 0x72e8...0000\`\n` +
+                           `💡 \`/add SOL SOL BXbm...Th\`\n\n` +
+                           `📝 **高级代币监控（指定合约地址）：**\n` +
+                           `/add [币种] [区块链] [钱包地址] [代币合约地址]\n` +
+                           `💡 **波场监听USDT：**\n\`/add USDT TRON T-Address TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t\`\n` +
+                           `💡 **Base链监听USDC：**\n\`/add USDC BASE 0x-Address 0x833589fCD6eDb6E08f4c7C32D4f71b54bda02913\`\n\n` +
+                           `*系统正在每 15 秒分布式轮询链上最新区块...*`;
     
     bot.sendMessage(chatId, welcomeMessage, { parse_mode: 'Markdown' });
 });
 
-// 📥 3️⃣ 更新 /add 指令解析器
-bot.onText(/\/add\s+(\S+)\s+(\S+)\s+(\S+)/, async (msg, match) => {
+// 📥 3️⃣ 支持四参数解析的 /add 指令
+bot.onText(/\/add\s+(\S+)\s+(\S+)\s+(\S+)(?:\s+(\S+))?/, async (msg, match) => {
     const coin = match[1].toUpperCase();
     const chain = match[2].toUpperCase();
     const address = match[3];
+    const contractAddress = match[4] || ''; // 如果不填，默认当做原生代币处理
     const targetChatId = msg.chat.id; 
 
-    // 简单校验
-    if (chain === 'TRON' && !address.startsWith('T')) {
-        return bot.sendMessage(targetChatId, `❌ 错误：TRC20 地址必须以大写字母 T 开头！`);
-    }
-    if ((chain === 'ETH' || chain === 'BASE' || chain === 'BSC') && !address.startsWith('0x')) {
-        return bot.sendMessage(targetChatId, `❌ 错误：EVM 链地址必须以 0x 开头！`);
-    }
+    if (chain === 'TRON' && !address.startsWith('T')) return bot.sendMessage(targetChatId, `❌ 错误：波场地址需以 T 开头！`);
+    if ((chain === 'ETH' || chain === 'BASE') && !address.startsWith('0x')) return bot.sendMessage(targetChatId, `❌ 错误：EVM地址需以 0x 开头！`);
 
     try {
-        await Wallet.create({ address, coin, chain, lastTxTimestamp: Date.now() });
-        bot.sendMessage(targetChatId, `✅ **成功添加多链监控！**\n🪙 币种: ${coin}\n🌐 区块链: ${chain}\n📍 地址: ${address}\n状态: 实时监听中...`, { parse_mode: 'Markdown' });
+        await Wallet.create({ address, coin, chain, contractAddress, lastTxTimestamp: Date.now() });
+        const contractInfo = contractAddress ? `\n📄 代币合约: \`${contractAddress}\`` : '\n📄 监听类型: 原生代币/整链流水';
+        bot.sendMessage(targetChatId, `✅ **成功添加精准监控！**\n🪙 监控币种: ${coin}\n🌐 区块链网络: ${chain}\n📍 目标地址: \`${address}\`${contractInfo}\n状态: 实时深度监听中...`, { parse_mode: 'Markdown' });
     } catch (error) {
-        bot.sendMessage(targetChatId, `❌ 数据库写入失败！该链下的地址可能已在监控中。`);
+        bot.sendMessage(targetChatId, `❌ 数据库写入失败！请确认该链、地址及合约的组合是否已存在。`);
     }
 });
 
-// 🔄 4️⃣ 核心分布式轮询器
+// 🔄 4️⃣ 分布式多链轮询处理器
 setInterval(async () => {
     try {
         const wallets = await Wallet.find({});
-        if (wallets.length === 0) return;
-
         for (let wallet of wallets) {
             try {
-                if (wallet.chain === 'TRON') {
-                    await scanTron(wallet);
-                } else if (wallet.chain === 'ETH' || wallet.chain === 'BASE') {
-                    await scanEVM(wallet);
-                } else if (wallet.chain === 'SOL') {
-                    await scanSolana(wallet);
-                }
+                if (wallet.chain === 'TRON') await scanTron(wallet);
+                else if (wallet.chain === 'ETH' || wallet.chain === 'BASE') await scanEVM(wallet);
+                else if (wallet.chain === 'SOL') await scanSolana(wallet);
             } catch (e) {
-                console.error(`扫描 [${wallet.chain}] 地址 ${wallet.address} 出错:`, e.message);
+                console.error(`[${wallet.chain}] 扫描错误 (${wallet.address}):`, e.message);
             }
         }
     } catch (err) {
-        console.error("多链定时轮询发生错误:", err);
+        console.error("轮询异常:", err);
     }
 }, 15000); 
 
-// =================【各个链的独立扫描算法逻辑】=================
+// =================【核心链升级算法逻辑】=================
 
-// 📌 【波场 TRON 扫描】
+// 📌 【波场 TRON】
 async function scanTron(wallet) {
-    const url = `https://trongrid.io{wallet.address}/transactions/trc20?limit=1&contract_address=TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t`;
+    // 如果用户没有指定代币合约，波场默认查询默认的 USDT 核心合约
+    const contract = wallet.contractAddress || "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
+    const url = `https://trongrid.io{wallet.address}/transactions/trc20?limit=1&contract_address=${contract}`;
     const headers = TRON_API_KEY ? { 'TRON-PRO-API-KEY': TRON_API_KEY } : {};
-    const response = await axios.get(url, { headers });
     
+    const response = await axios.get(url, { headers });
     if (!response.data?.data?.length) return;
+    
     const lastTx = response.data.data[0];
     const txTimestamp = lastTx.block_timestamp;
 
     if (txTimestamp > wallet.lastTxTimestamp) {
-        const value = (parseFloat(lastTx.value) / 1000000).toFixed(2);
-        sendNotification(wallet, lastTx.from, lastTx.to, value, lastTx.transaction_id);
+        // 波场 TRC-20 大多为 6 位精度 (USDT)
+        const decimals = lastTx.token_info?.decimals || 6;
+        const value = (parseFloat(lastTx.value) / Math.pow(10, decimals)).toFixed(2);
+        
+        sendNotification(wallet, lastTx.from, lastTx.to, value, lastTx.transaction_id, lastTx.token_info?.symbol || wallet.coin);
         wallet.lastTxTimestamp = txTimestamp;
         await wallet.save();
     }
 }
 
-// 📌 【以太坊 / EVM 链扫描】以 Alchemy [Transfers API] 为例
+// 📌 【EVM 链：以太坊 / Base 精准代币级监控】
 async function scanEVM(wallet) {
-    // 动态判断链网络
     const network = wallet.chain === 'BASE' ? 'base-mainnet' : 'eth-mainnet';
     const url = `https://${network}://{ALCHEMY_API_KEY}`;
     
-    // 使用标准的 alchemy_getAssetTransfers 结构体拉取一笔最新转账记录
+    // 配置参数：如果填写了 contractAddress，则精准只看该 ERC-20 资产类别；没填则看外包资产（ETH等）
+    const category = wallet.contractAddress ? ["erc20"] : ["external"];
+    const params = {
+        category,
+        maxCount: "0x1",
+        order: "desc"
+    };
+
+    // 默认监听转入，通常实际生产环境会分别请求 fromAddress 和 toAddress，这里以大盘吞吐量为例
+    params.toAddress = wallet.address;
+
     const postData = {
         jsonrpc: "2.0",
         id: 1,
         method: "alchemy_getAssetTransfers",
-        params: [{
-            toAddress: wallet.address, // 或者同时监控从该地址转出，这里以流入为例展示
-            category: ["external", "erc20"],
-            maxCount: "0x1",
-            order: "desc"
-        }]
+        params: [params]
     };
     
     const response = await axios.post(url, postData);
-    const lastTx = response.data?.result?.transfers?.[0];
-    if (!lastTx) return;
+    const transfers = response.data?.result?.transfers;
+    if (!transfers || transfers.length === 0) return;
+
+    const lastTx = transfers[0];
+    
+    // 如果用户设置了具体监听的合约地址，必须强制匹配该哈希
+    if (wallet.contractAddress && lastTx.rawContract?.address?.toLowerCase() !== wallet.contractAddress.toLowerCase()) {
+        return; 
+    }
 
     const txId = lastTx.hash;
-    // 如果最新的哈希跟我们存储的不一样，判定有新事件
     if (txId !== wallet.lastTxId) {
         const value = lastTx.value ? parseFloat(lastTx.value).toFixed(4) : "未知";
-        sendNotification(wallet, lastTx.from, lastTx.to, value, txId);
+        const txCoinSymbol = lastTx.asset || wallet.coin;
+        
+        sendNotification(wallet, lastTx.from, lastTx.to, value, txId, txCoinSymbol);
         wallet.lastTxId = txId;
         await wallet.save();
     }
 }
 
-// 📌 【Solana 链扫描】
+// 📌 【Solana 链：完美重构、解析具体金额与代币变动】
 async function scanSolana(wallet) {
-    // 1. 获取该地址最近的一条交易签名特征码
-    const postData = {
-        jsonrpc: "2.0",
-        id: 1,
+    // 1. 获取最新一笔交易特征签章
+    const sigResponse = await axios.post(SOLANA_RPC_URL, {
+        jsonrpc: "2.0", id: 1,
         method: "getSignaturesForAddress",
         params: [wallet.address, { limit: 1 }]
-    };
-    
-    const response = await axios.post(SOLANA_RPC_URL, postData);
-    const lastSignatureObj = response.data?.result?.[0];
-    if (!lastSignatureObj) return;
+    });
+    const lastSigObj = sigResponse.data?.result?.[0];
+    if (!lastSigObj) return;
 
-    const currentSig = lastSignatureObj.signature;
+    const currentSig = lastSigObj.signature;
 
-    // 2. 如果最新签名和数据库中留存的不匹配，触发提醒
+    // 2. 发现新交易，立即请求 getTransaction 提取核心数据明细
     if (currentSig !== wallet.lastTxId) {
-        // 由于解析原始 Solana 交易数据极度繁琐，在此直接向群组广播发生了最新的链上交互事件。
-        // （开发环境中通常可以调用 Helius 的 getTransfersByAddress 或者进一步请求 getTransaction 提取具体数值）
-        bot.sendMessage(
-            process.env.TG_CHAT_ID, 
-            `🔔 【Solana 链上动态提醒】\n` +
-            `监控地址: ${wallet.address}\n` +
-            `动作: 检测到最新区块交互事件！\n` +
-            `交易特征签名: ${currentSig.substring(0, 16)}...\n` +
-            `🔗 查看详情: https://solscan.io{currentSig}`
-        );
-        
-        wallet.lastTxId = currentSig;
-        await wallet.save();
-    }
-}
+        try {
+            const txResponse = await axios.post(SOLANA_RPC_URL, {
+                jsonrpc: "2.0", id: 1,
+                method: "getTransaction",
+                params: [currentSig, { encoding: "jsonParsed", maxSupportedTransactionVersion: 0 }]
+            });
 
-// 📢 5️⃣ 统一通知中心
-function sendNotification(wallet, from, to, value, txId) {
-    const isOut = from.toLowerCase() === wallet.address.toLowerCase();
-    const actionStr = isOut ? `💸 【转出通知】` : `💰 【收款通知】`;
-    const arrowStr = isOut ? `支出` : `收到`;
-    const counterparty = isOut ? `接收方: ${to}` : `发送方: ${from}`;
-    
-    let explorerUrl = `https://tronscan.org{txId}`;
-    if (wallet.chain === 'ETH') explorerUrl = `https://etherscan.io{txId}`;
-    if (wallet.chain === 'BASE') explorerUrl = `https://basescan.org{txId}`;
+            const txData = txResponse.data?.result;
+            if (!txData) return;
 
-    const text = `${actionStr}\n` +
-                 `网络公链: ${wallet.chain}\n` +
-                 `监控地址: ${wallet.address}\n` +
-                 `动作类型: ${arrowStr} ${wallet.coin}\n` +
-                 `动账金额: ${value} ${wallet.coin}\n` +
-                 `${counterparty}\n` +
-                 `单号缩略: ${txId.substring(0, 12)}...\n` +
-                 `🔗 [区块链浏览器查看详情](${explorerUrl})`;
+            let finalValue = "未知";
+            let coinSymbol = wallet.coin;
+            let fromAccount = "未知";
+            let toAccount = "未知";
 
-    bot.sendMessage(process.env.TG_CHAT_ID, text, { parse_mode: 'Markdown', disable_web_page_preview: true });
-}
+            // 情况 A：用户指定监听 SPL 代币（如 Solana 上的 USDC/模因币）
+            if (wallet.contractAddress) {
+                // 在 meta.postTokenBalances 中寻找目标代币的变动流水
+                const tokenBalances = txData.meta?.postTokenBalances || [];
+                const matchedBalance = tokenBalances.find(b => b.mint === wallet.contractAddress && b.owner === wallet.address);
+                
+                if (matchedBalance) {
+                    // 通过对比 preTokenBalances 和 postTokenBalances 可以精准算出转入/转出净值
+                    const preBalances = txData.meta?.preTokenBalances || [];
+                    const preB = preBalances.find(b => b.mint === wallet.contractAddress && b.owner === wallet.address);
+                    const preAmount = preB ? parseFloat(preB.uiTokenAmount.uiAmountString) : 0;
+                    const postAmount = parseFloat(matchedBalance.uiTokenAmount.uiAmountString);
+                    
+                    finalValue = Math.abs(postAmount - preAmount).toFixed(4);
+                    coinSymbol = wallet.coin; 
+                    if (postAmount > preAmount) {
+                        toAccount = wallet.address;
+                    } else {
+                        fromAccount = wallet.address;
+                    }
+                }
+            } else {
+                // 情况 B：没有指定合约，解析 Solana 原生代币 SOL 转账
+                const instructions = txData.transaction?.message?.instructions || [];
+                // 寻找标准的 SystemProgram 转账指令
+                const transferInst = instructions.find(i => i.program === "system" && i.parsed?.type === "transfer");
+                
+                if (transferInst) {
+                    const info = transferInst.parsed.info;
+                    fromAccount = info.source;
+                    toAccount = info.destination;
+                    finalValue = (parseFloat(info.lamports) / 1000000000).toFixed(4); // 9位精度
+                    coinSymbol = "SOL";
+                }
+            }
+
+            // 发送通知
+            if (finalValue !== "未知") {
+                sendNotification(wallet, fromAccount, toAccount, finalValue, currentSig, coinSymbol);
+            } else {
