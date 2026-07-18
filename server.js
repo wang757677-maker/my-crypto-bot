@@ -40,7 +40,9 @@ const WalletSchema = new mongoose.Schema({
 WalletSchema.index({ address: 1, chain: 1, contractAddress: 1 }, { unique: true });
 const Wallet = mongoose.model('RealtimeMultiChainWallet', WalletSchema);
 
+// 初始化机器人（增加 polling 错误捕获，防止网络抖动导致的断连）
 const bot = new TelegramBot(token, { polling: true });
+bot.on('polling_error', (error) => console.log('⏳ 电报轮询网络警告:', error.message));
 
 // 📡 兼容 Render 健康检查
 const expressApp = express();
@@ -51,17 +53,52 @@ expressApp.listen(PORT, '0.0.0.0', () => {
     console.log(`📡 端口监听成功！健康检查已激活，端口: ${PORT}`);
 });
 
-bot.onText(/\/start/, (msg) => {
-    const chatId = msg.chat.id;
-    bot.sendMessage(chatId, `👋 **欢迎使用秒级全资产流水监控机器人！**\n\n📝 **指令格式：**\n\`/add [币种] [区块链] [钱包地址]\`\n\n💡 示例:\n\`/add BTC BTC 比特币地址\`\n\`/add SOL SOL 索拉纳地址\``, { parse_mode: 'Markdown' });
-});
+// 📱 智能消息分发中心：使用最稳健的 message 监听，彻底告别正则失效
+bot.on('message', async (msg) => {
+    if (!msg.text) return;
+    const targetChatId = msg.chat.id;
+    const text = msg.text.trim();
 
-bot.onText(/\/add\s+(\S+)\s+(\S+)\s+(\S+)(?:\s+(\S+))?/, async (msg, match) => {
-    const coin = match[1].toUpperCase(); const chain = match[2].toUpperCase(); const address = match[3]; const contractAddress = match[4] || ''; const targetChatId = msg.chat.id;
-    try {
-        await Wallet.create({ address, coin, chain, contractAddress, lastTxTimestamp: Date.now() });
-        bot.sendMessage(targetChatId, `✅ **成功切入监控网！**\n🌐 网络: *${chain}*\n📍 地址: \`${address}\``, { parse_mode: 'Markdown' });
-    } catch (error) { bot.sendMessage(targetChatId, `❌ 添加失败：资产已存在。`); }
+    // 1️⃣ 处理 /start 指令
+    if (text.startsWith('/start')) {
+        const welcome = `👋 **欢迎使用秒级全资产大额/异动流水监控机器人！**\n\n` +
+                        `📝 **快速添加实时监听指令指南：**\n` +
+                        `• **BTC 监控：** \`/add BTC BTC [比特币地址]\`\n` +
+                        `• **ETH 原生：** \`/add ETH ETH [以太坊地址]\`\n` +
+                        `• **SOL 原生：** \`/add SOL SOL [Solana地址]\`\n` +
+                        `• **XRP 瑞波：** \`/add XRP XRPL [XRP以r开头的地址]\`\n` +
+                        `• **USDT (波场 TRC20)：** \`/add USDT TRON [T开头的地址]\`\n` +
+                        `• **USDT (以太坊 ERC20)：** \`/add USDT ETH [0x地址] 0xdAC17F958D2ee523a2206206994597C13D831ec7\`\n\n` +
+                        `*⏰ 任务管理器每 15 秒分布式深度清洗多链新区块数据...*`;
+        return bot.sendMessage(targetChatId, welcome, { parse_mode: 'Markdown' });
+    }
+
+    // 2️⃣ 处理 /add 指令
+    if (text.startsWith('/add')) {
+        // 使用空格将指令切开，规避复杂的正则符号
+        const parts = text.split(/\s+/);
+        if (parts.length < 4) {
+            return bot.sendMessage(targetChatId, '❌ 格式错误！请输入: `/add [币种] [区块链] [钱包地址] [可选:代币合约]`', { parse_mode: 'Markdown' });
+        }
+
+        const coin = parts[1].toUpperCase();
+        const chain = parts[2].toUpperCase();
+        const address = parts[3];
+        const contractAddress = parts[4] || '';
+
+        // 参数合法性基础校验
+        if (chain === 'BTC' && !/^(1|3|bc1)/.test(address)) return bot.sendMessage(targetChatId, '❌ 错误：不合法的 BTC 地址类型！');
+        if (chain === 'TRON' && !address.startsWith('T')) return bot.sendMessage(targetChatId, '❌ 错误：TRON(TRC20) 地址必须以 T 开头！');
+        if (chain === 'ETH' && !address.startsWith('0x')) return bot.sendMessage(targetChatId, '❌ 错误：EVM 链地址必须以 0x 开头！');
+        if (chain === 'XRPL' && !address.startsWith('r')) return bot.sendMessage(targetChatId, '❌ 错误：XRP 地址必须以小写 r 开头！');
+
+        try {
+            await Wallet.create({ address, coin, chain, contractAddress, lastTxTimestamp: Date.now() });
+            return bot.sendMessage(targetChatId, `✅ **成功切入实时监控网！**\n🪙 标的资产: *${coin}*\n🌐 区块网络: *${chain}*\n📍 监控地址: \`${address}\``, { parse_mode: 'Markdown' });
+        } catch (error) {
+            return bot.sendMessage(targetChatId, `❌ 添加失败：该网络组合资产已在名单内。`);
+        }
+    }
 });
 
 // 🔄 引入核心业务逻辑驱动
