@@ -6,11 +6,11 @@ const axios = require('axios');
 const token = process.env.TG_BOT_TOKEN;
 const mongoUri = process.env.MONGODB_URI;
 
-// 🔑 第三方核心网络接口凭证（请在环境变量中配齐以确保高并发稳定性）
+// 🔑 第三方核心网络接口凭证
 const TRON_API_KEY = process.env.TRON_API_KEY || ''; 
 const ALCHEMY_API_KEY = process.env.ALCHEMY_API_KEY || 'demo'; 
 const SOLANA_RPC_URL = process.env.SOLANA_RPC_URL || 'https://solana.com';
-const XRPL_RPC_URL = process.env.XRPL_RPC_URL || 'https://xrplcluster.com'; // XRP官方公共群集节点
+const XRPL_RPC_URL = process.env.XRPL_RPC_URL || 'https://xrplcluster.com'; 
 
 if (!token || !mongoUri) {
     console.error("❌ 错误：未配置 TG_BOT_TOKEN 或 MONGODB_URI！");
@@ -19,15 +19,15 @@ if (!token || !mongoUri) {
 
 // 🌐 连接 MongoDB
 mongoose.connect(mongoUri)
-  .then(() => console.log("🚀 成功连接到全智能五大币种(BTC/ETH/SOL/USDT/XRP)监控数据库！"))
+  .then(() => console.log("🚀 成功连接到全智能五大币种监控数据库！"))
   .catch(err => console.error("❌ MongoDB 连接失败:", err));
 
 // 🛠️ 1️⃣ 精准钱包数据模型
 const WalletSchema = new mongoose.Schema({
     address: { type: String, required: true },
-    coin: { type: String, required: true },         // BTC, ETH, SOL, USDT, XRP
-    chain: { type: String, required: true },        // BTC, ETH, SOL, TRON, XRPL
-    contractAddress: { type: String, default: '' },   // 仅代币(如ERC20/TRC20 USDT)需要
+    coin: { type: String, required: true },         
+    chain: { type: String, required: true },        
+    contractAddress: { type: String, default: '' },   
     lastTxId: { type: String, default: '' },
     lastTxTimestamp: { type: Number, default: 0 }
 });
@@ -82,7 +82,6 @@ setInterval(async () => {
     try {
         const wallets = await Wallet.find({});
         for (let wallet of wallets) {
-            // 毫秒级防截流休眠器：给高频API留出呼吸时间，杜绝被封主网IP
             await new Promise(resolve => setTimeout(resolve, 300)); 
             try {
                 if (wallet.chain === 'BTC') await scanBitcoin(wallet);
@@ -101,7 +100,6 @@ setInterval(async () => {
 
 // =================【🎯 五大币种底层独立驱动解析算法】=================
 
-// 📌 【驱动 A - 比特币 BTC】
 async function scanBitcoin(wallet) {
     const response = await axios.get(`https://mempool.space{wallet.address}/txs`);
     if (!response.data?.length) return;
@@ -116,17 +114,24 @@ async function scanBitcoin(wallet) {
 
         const isOut = outVal > inVal;
         const finalNet = (Math.abs(outVal - inVal) / 100000000).toFixed(6);
-        const counterparty = isOut ? (lastTx.vout.find(o => o.scriptpubkey_address !== wallet.address)?.scriptpubkey_address || '多重接收') : (lastTx.vin.find(i => i.prevout?.scriptpubkey_address !== wallet.address)?.prevout?.scriptpubkey_address || '多重发送');
+        let counterparty = "多端交互";
+        
+        if (isOut) {
+            const mainTarget = lastTx.vout.find(o => o.scriptpubkey_address !== wallet.address);
+            if (mainTarget?.scriptpubkey_address) counterparty = mainTarget.scriptpubkey_address;
+        } else {
+            const mainSource = lastTx.vin.find(i => i.prevout?.scriptpubkey_address !== wallet.address);
+            if (mainSource?.prevout?.scriptpubkey_address) counterparty = mainSource.prevout.scriptpubkey_address;
+        }
 
-        sendNotification(wallet, isOut, finalNet, txId, wallet.coin, counterparty, lastTx.status.confirmed ? "✅ 链上确认" : "⏳ 内存池排队中");
+        sendNotification(wallet, isOut, finalNet, txId, wallet.coin, counterparty, lastTx.status.confirmed ? "✅ 已确认" : "⏳ 内存池排队");
         wallet.lastTxId = txId;
         await wallet.save();
     }
 }
 
-// 📌 【驱动 B - 波场 TRON & TRC20-USDT】
 async function scanTron(wallet) {
-    const contract = wallet.contractAddress || "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"; // 默认加载USDT
+    const contract = wallet.contractAddress || "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"; 
     const url = `https://trongrid.io{wallet.address}/transactions/trc20?limit=1&contract_address=${contract}`;
     const headers = TRON_API_KEY ? { 'TRON-PRO-API-KEY': TRON_API_KEY } : {};
     
@@ -146,7 +151,6 @@ async function scanTron(wallet) {
     }
 }
 
-// 📌 【驱动 C - 以太坊 ETH & ERC20-USDT】
 async function scanEVM(wallet) {
     const url = `https://alchemy.com{ALCHEMY_API_KEY}`;
     const category = wallet.contractAddress ? ["erc20"] : ["external"];
@@ -172,7 +176,6 @@ async function scanEVM(wallet) {
     }
 }
 
-// 📌 【驱动 D - 索拉纳 SOL & SPL代币】
 async function scanSolana(wallet) {
     const sigResponse = await axios.post(SOLANA_RPC_URL, { jsonrpc: "2.0", id: 1, method: "getSignaturesForAddress", params: [wallet.address, { limit: 1 }] });
     const currentSig = sigResponse.data?.result?.[0]?.signature;
@@ -183,8 +186,7 @@ async function scanSolana(wallet) {
         const txData = txResponse.data?.result;
         if (!txData) return;
 
-        let value = "未知", isOut = false, counterparty = "系统撮合/智能合约";
-
+        let value = "未知", isOut = false, counterparty = "智能合约";
         const instructions = txData.transaction?.message?.instructions || [];
         const transferInst = instructions.find(i => i.program === "system" && i.parsed?.type === "transfer");
         
@@ -201,7 +203,6 @@ async function scanSolana(wallet) {
     }
 }
 
-// 📌 【驱动 E - 新增：瑞波币 XRP 精准监听】
 async function scanXRP(wallet) {
     const postData = {
         method: "account_tx",
@@ -215,44 +216,8 @@ async function scanXRP(wallet) {
     if (txId !== wallet.lastTxId) {
         const txDetail = txObj.tx;
         
-        // XRP Ledger 中标准的 Payment 支付指令且必须是纯 XRP 交易（字符串代表XRP微滴 drops）
-        if (txDetail.TransactionType === "Payment" && typeof txDetail.Amount === "string") {        // XRP Ledger 中标准的 Payment 支付指令且必须是纯 XRP 交易（字符串代表XRP微滴 drops）
         if (txDetail.TransactionType === "Payment" && typeof txDetail.Amount === "string") {
             const isOut = txDetail.Account === wallet.address;
-            const value = (parseFloat(txDetail.Amount) / 1000000).toFixed(2); // 6位精度
+            const value = (parseFloat(txDetail.Amount) / 1000000).toFixed(2); 
             const counterparty = isOut ? txDetail.Destination : txDetail.Account;
-
-            sendNotification(wallet, isOut, value, txId, 'XRP', counterparty);
-        }
-        wallet.lastTxId = txId;
-        await wallet.save();
-    }
-}
-
-// 📢 5️⃣ 顶级通知格式化中心（把漏掉的这个函数完整补在文件最底部）
-function sendNotification(wallet, isOut, value, txId, activeSymbol, counterparty, btcStatus = '') {
-    const actionStr = isOut ? `💸 【转出通知】` : `💰 【收款通知】`;
-    const arrowStr = isOut ? `支出` : `收到`;
-    
-    let explorerUrl = `https://tronscan.org{txId}`;
-    if (wallet.chain === 'BTC') explorerUrl = `https://mempool.space{txId}`;
-    if (wallet.chain === 'ETH') explorerUrl = `https://etherscan.io{txId}`;
-    if (wallet.chain === 'SOL') explorerUrl = `https://solscan.io{txId}`;
-    if (wallet.chain === 'XRPL') explorerUrl = `https://xrpscan.com{txId}`;
-
-    const btcExtra = btcStatus ? `📊 记账状态: _${btcStatus}_\n` : '';
-
-    const text = `${actionStr}\n` +
-                 `=====================\n` +
-                 `🌐 动账网络: *${wallet.chain}*\n` +
-                 `📍 监控账户: \`${wallet.address.substring(0,8)}...${wallet.address.substring(wallet.address.length-4)}\`\n` +
-                 `⚡ 业务类型: *${arrowStr} ${activeSymbol}*\n` +
-                 `💵 流动净值: *${value}* ${activeSymbol}\n` +
-                 `👤 交易对手: \`${counterparty.substring(0,16)}...\`\n` +
-                 btcExtra +
-                 `=====================\n` +
-                 `🔗 [在区块链浏览器中查看完整交易明细](${explorerUrl})`;
-
-    bot.sendMessage(process.env.TG_CHAT_ID, text, { parse_mode: 'Markdown', disable_web_page_preview: true });
-}
 
